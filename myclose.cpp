@@ -16,6 +16,10 @@
 #include <execinfo.h>
 #include <sys/syscall.h>
 
+/*
+ * g++ -Wall -O0 -shared -std=gnu++11 -fPIC -o libexample.so thisfile.cpp
+ */
+
 static __attribute__((unused)) pid_t gettid( void ) { return syscall( __NR_gettid ); }
 
 #define _USE_BACKTRACE
