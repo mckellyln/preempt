@@ -1,10 +1,10 @@
 
 all: libmyclose.so
 
-#LIBS=-lunwind
-LIBS=
+#LIBS=-lunwind -ldl
+LIBS=-ldl
 
-libmyclose.so: myclose.cpp
+libmyclose.so: myclose.cpp makefile
 	$(CXX) -Wall -O0 -shared -std=gnu++11 -fPIC -o $@ $< $(LIBS)
 
 clean:

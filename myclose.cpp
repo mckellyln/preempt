@@ -22,6 +22,8 @@
 
 static __attribute__((unused)) pid_t gettid( void ) { return syscall( __NR_gettid ); }
 
+// static void _myfini() __attribute__((destructor));
+
 #define _USE_BACKTRACE
  
 typedef int (*orig_close_f_type)(int fd);
@@ -29,8 +31,28 @@ typedef int (*orig_close_f_type)(int fd);
 static std::atomic<int> first = {1};
 static orig_close_f_type orig_close = NULL;
 static FILE *fp = NULL;
+static char log_file[256] = { "" };
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+
+extern "C" void _myfini()
+{
+    if (first == 0)
+    {
+        first = 1;
+        if (fp != NULL)
+        {
+            fclose(fp);
+            fp = NULL;
+            struct stat sb;
+            int srtn = stat(log_file, &sb);
+            if ( (srtn == 0) && (sb.st_size == 0) )
+                unlink(log_file);
+        }
+        log_file[0] = '\0';
+        orig_close = NULL;
+    }
+}
 
 #pragma weak _close = close
 #pragma weak __close = close
@@ -38,47 +60,38 @@ extern "C" int close(int fd)
 {
     if (first)
     {
-        int err = 0;
-        char log_file[256] = { "" };
-
-        sprintf(log_file, "/tmp/close_wrapper.%d.log", getpid());
-
-        fp = fopen(log_file, "w");
-        if (fp == NULL)
+        pthread_mutex_lock(&lock);
+        if (first)
         {
-            err = errno;
-            fprintf(stderr, "close() wrapper log_file open failed, errno = %d\n", err);
-            fp = stderr;
-        }
+            first = 0;
+            int err = 0;
 
-        orig_close = (orig_close_f_type)dlsym(RTLD_NEXT, "close");
-        if (orig_close == NULL)
-        {
-            int err = errno;
-            fprintf(fp, "close() wrapper dlsym failed, errno = %d\n", err);
-            fflush(fp);
-        }
-        first = 0;
-    }
+            sprintf(log_file, "/tmp/socket_close_wrapper.%d.log", getpid());
 
-    char fmt[256] = { "" };
-    char timestamp[256] = { "?" };
-    struct tm *tm = NULL;
-    struct timeval tv;
+            fp = fopen(log_file, "w");
+            if (fp == NULL)
+            {
+                err = errno;
+                fprintf(stderr, "close() wrapper log_file open failed, errno = %d\n", err);
+                fp = stderr;
+            }
 
-    int srtn = gettimeofday(&tv, NULL);
-    if (srtn == 0)
-    {
-        if((tm = localtime(&tv.tv_sec)) != NULL)
-        {
-            strftime(fmt, 255, "%Y-%m-%d %H:%M:%S.%%03u", tm);
-            snprintf(timestamp, 255, fmt, tv.tv_usec/1000);
+            orig_close = (orig_close_f_type)dlsym(RTLD_NEXT, "close");
+            if (orig_close == NULL)
+            {
+                int err = errno;
+                fprintf(fp, "close() wrapper dlsym failed, errno = %d\n", err);
+                fflush(fp);
+            }
+
+            atexit(_myfini);
         }
+        pthread_mutex_unlock(&lock);
     }
 
     bool issock = false;
     struct stat sb;
-    srtn = fstat(fd, &sb);
+    int srtn = fstat(fd, &sb);
     if (srtn == 0)
     {
         if (S_ISSOCK(sb.st_mode))
@@ -99,18 +112,33 @@ extern "C" int close(int fd)
         }
     }
 
+    char fmt[256] = { "" };
+    char timestamp[256] = { "?" };
+    struct tm *tm = NULL;
+    struct timeval tv;
+
+    srtn = gettimeofday(&tv, NULL);
+    if (srtn == 0)
+    {
+        if((tm = localtime(&tv.tv_sec)) != NULL)
+        {
+            strftime(fmt, 255, "%Y-%m-%d %H:%M:%S.%%03u", tm);
+            snprintf(timestamp, 255, fmt, tv.tv_usec/1000);
+        }
+    }
+
     pthread_mutex_lock(&lock);
 
     if (orig_close == NULL)
     {
-        fprintf(fp, "%s %u %u close() wrapper orig socket close(%d) not found error\n", timestamp, getpid(), gettid(), fd);
+        fprintf(fp, "%s %u %u socket close(%d) not found error\n", timestamp, getpid(), gettid(), fd);
         errno = ENOSYS;
         srtn = -1;
     }
     else
     {
         srtn = orig_close(fd);
-        fprintf(fp, "%s %u %u close() wrapper orig socket close(%d) returns %d\n", timestamp, getpid(), gettid(), fd, srtn);
+        fprintf(fp, "%s %u %u socket close(%d) returns %d\n", timestamp, getpid(), gettid(), fd, srtn);
     }
 
 #ifdef _USE_BACKTRACE
